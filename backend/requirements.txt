@@ -2,3 +2,6 @@ fastapi
 uvicorn[standard]
 pydantic-settings
 pytest
+pandas
+scikit-learn
+joblib
