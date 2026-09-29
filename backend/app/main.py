@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.config import settings
+from app.routers.scan import router as scan_router
 
 
 app = FastAPI(
@@ -10,6 +11,9 @@ app = FastAPI(
     description="AI Security Gateway for protecting LLM applications.",
     version="0.1.0",
 )
+
+
+app.include_router(scan_router)
 
 
 @app.get("/health")
