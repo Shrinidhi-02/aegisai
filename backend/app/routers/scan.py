@@ -1,18 +1,33 @@
 """API endpoints for scanning AI input and output."""
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from time import perf_counter
+from uuid import uuid4
 
+from fastapi import APIRouter, Depends, Request
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.auth import verify_api_key
+from app.db.database import get_db
+from app.db.models import APIKey, AuditLog
 from app.detectors.injection import scan_rules
 from app.detectors.ml import ml_score
 from app.detectors.pii import redact_pii
 from app.policy.engine import build_decision
 from app.policy.schemas import Threat
+from app.rate_limit import check_rate_limit
 
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["scanning"],
+)
+
+
+api_key_header = APIKeyHeader(
+    name="X-API-Key",
+    auto_error=True,
 )
 
 
@@ -35,9 +50,69 @@ class ScanResponse(BaseModel):
     sanitized_text: str | None = None
 
 
+def authenticate_api_key(
+    api_key: str = Depends(api_key_header),
+    db: Session = Depends(get_db),
+) -> APIKey:
+    """Authenticate the request using the supplied API key."""
+
+    return verify_api_key(db, api_key)
+
+
+def get_client_identifier(
+    request: Request,
+    api_key_record: APIKey = Depends(authenticate_api_key),
+) -> str:
+    """Return a stable identifier for rate limiting."""
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    return f"{api_key_record.id}:{client_ip}"
+
+
+def create_audit_log(
+    db: Session,
+    request: ScanRequest,
+    request_id: str,
+    direction: str,
+    risk_score: int,
+    action: str,
+    threats: list[Threat],
+    sanitized_text: str | None,
+    source_ip: str,
+    latency_ms: float,
+) -> None:
+    """Store a security audit record without saving raw sensitive text."""
+
+    threat_types = ",".join(
+        threat.type for threat in threats
+    )
+
+    log = AuditLog(
+        request_id=request_id,
+        action=action,
+        risk_score=risk_score,
+        threat_types=threat_types,
+        user_id=request.user_id,
+        session_id=request.session_id,
+    )
+
+    db.add(log)
+    db.commit()
+
+
 @router.post("/scan-input", response_model=ScanResponse)
-def scan_input(request: ScanRequest) -> ScanResponse:
+def scan_input(
+    request: ScanRequest,
+    http_request: Request,
+    identifier: str = Depends(get_client_identifier),
+    db: Session = Depends(get_db),
+) -> ScanResponse:
     """Scan a user prompt before it reaches an AI model."""
+
+    start_time = perf_counter()
+
+    check_rate_limit(identifier)
 
     rule_score, rule_hits = scan_rules(request.text)
 
@@ -72,17 +147,53 @@ def scan_input(request: ScanRequest) -> ScanResponse:
         sanitized_text=sanitized_text,
     )
 
+    request_id = str(uuid4())
+
+    source_ip = (
+        http_request.client.host
+        if http_request.client
+        else "unknown"
+    )
+
+    latency_ms = (perf_counter() - start_time) * 1000
+
+    create_audit_log(
+        db=db,
+        request=request,
+        request_id=request_id,
+        direction="input",
+        risk_score=decision.risk_score,
+        action=decision.action,
+        threats=decision.threats,
+        sanitized_text=decision.sanitized_text,
+        source_ip=source_ip,
+        latency_ms=latency_ms,
+    )
+
     return ScanResponse(
         allowed=decision.allowed,
         action=decision.action,
         risk_score=decision.risk_score,
-        threats=[threat.model_dump() for threat in decision.threats],
+        threats=[
+            threat.model_dump()
+            for threat in decision.threats
+        ],
         sanitized_text=decision.sanitized_text,
     )
 
+
 @router.post("/scan-output", response_model=ScanResponse)
-def scan_output(request: ScanRequest) -> ScanResponse:
+def scan_output(
+    request: ScanRequest,
+    http_request: Request,
+    identifier: str = Depends(get_client_identifier),
+    db: Session = Depends(get_db),
+) -> ScanResponse:
     """Scan an AI model response before it reaches the user."""
+
+    start_time = perf_counter()
+
+    check_rate_limit(identifier)
 
     rule_score, rule_hits = scan_rules(request.text)
 
@@ -117,10 +228,36 @@ def scan_output(request: ScanRequest) -> ScanResponse:
         sanitized_text=sanitized_text,
     )
 
+    request_id = str(uuid4())
+
+    source_ip = (
+        http_request.client.host
+        if http_request.client
+        else "unknown"
+    )
+
+    latency_ms = (perf_counter() - start_time) * 1000
+
+    create_audit_log(
+        db=db,
+        request=request,
+        request_id=request_id,
+        direction="output",
+        risk_score=decision.risk_score,
+        action=decision.action,
+        threats=decision.threats,
+        sanitized_text=decision.sanitized_text,
+        source_ip=source_ip,
+        latency_ms=latency_ms,
+    )
+
     return ScanResponse(
         allowed=decision.allowed,
         action=decision.action,
         risk_score=decision.risk_score,
-        threats=[threat.model_dump() for threat in decision.threats],
+        threats=[
+            threat.model_dump()
+            for threat in decision.threats
+        ],
         sanitized_text=decision.sanitized_text,
     )
