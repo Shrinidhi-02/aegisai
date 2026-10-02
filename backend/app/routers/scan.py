@@ -261,3 +261,34 @@ def scan_output(
         ],
         sanitized_text=decision.sanitized_text,
     )
+
+
+@router.get("/audit-logs")
+def get_audit_logs(
+    db: Session = Depends(get_db),
+    identifier: str = Depends(get_client_identifier),
+) -> list[dict]:
+    """Return recent security audit logs for the dashboard."""
+
+    check_rate_limit(identifier)
+
+    logs = (
+        db.query(AuditLog)
+        .order_by(AuditLog.id.desc())
+        .limit(20)
+        .all()
+    )
+
+    return [
+        {
+            "id": log.id,
+            "request_id": log.request_id,
+            "action": log.action,
+            "risk_score": log.risk_score,
+            "threat_types": log.threat_types,
+            "user_id": log.user_id,
+            "session_id": log.session_id,
+            "created_at": log.created_at.isoformat(),
+        }
+        for log in logs
+    ]
