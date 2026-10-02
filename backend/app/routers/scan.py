@@ -8,6 +8,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.alerts.service import create_alert
 from app.auth import verify_api_key
 from app.db.database import get_db
 from app.db.models import APIKey, AuditLog
@@ -147,6 +148,15 @@ def scan_input(
         sanitized_text=sanitized_text,
     )
 
+    alert = create_alert(
+        action=decision.action,
+        risk_score=decision.risk_score,
+        threats=[threat.type for threat in decision.threats],
+    )
+
+    if alert:
+        print(alert.message)
+
     request_id = str(uuid4())
 
     source_ip = (
@@ -227,6 +237,15 @@ def scan_output(
         has_pii=has_pii,
         sanitized_text=sanitized_text,
     )
+
+    alert = create_alert(
+        action=decision.action,
+        risk_score=decision.risk_score,
+        threats=[threat.type for threat in decision.threats],
+    )
+
+    if alert:
+        print(alert.message)
 
     request_id = str(uuid4())
 
