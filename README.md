@@ -34,3 +34,11 @@ Safe Response
   v
 User
 ```
+## Docker Deployment
+
+AegisAI can be run locally using Docker.
+
+### Build the Docker image
+
+```bash
+docker build -t aegisai:latest .
